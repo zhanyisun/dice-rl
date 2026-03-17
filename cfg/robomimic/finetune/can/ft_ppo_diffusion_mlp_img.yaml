@@ -1,0 +1,177 @@
+defaults:
+  - _self_
+hydra:
+  run:  
+    dir: ${logdir}
+_target_: agent.finetune.train_ppo_diffusion_img_agent_new.TrainPPODiffusionImgAgent
+
+name: ${env_name}_ft_diffusion_mlp_img_ta${horizon_steps}_td${denoising_steps}_tdf${ft_denoising_steps}
+logdir: ${oc.env:DPPO_LOG_DIR}/robomimic-finetune/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+base_policy_path: "/store/real/zhanyis/dppo/log_dir/robomimic-pretrain/can_pre_diffusion_mlp_img_ta4_td50/2026-01-14_23-33-39_42/checkpoint/state_1800.pt"
+robomimic_env_cfg_path: /store/real/zhanyis/dppo/cfg/robomimic/env_meta/${env_name}-img.json
+normalization_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/mh/normalization.npz
+
+seed: 42
+device: cuda:0
+env_name: can
+original_obs_dim: 9  # Low-dim state observation
+visual_feature_dim: 128  # From pretrained model
+obs_dim: ${eval:'${visual_feature_dim} + ${original_obs_dim}'}  # 137 for augmented features
+action_dim: 7
+denoising_steps: 50
+ft_denoising_steps: 10
+cond_steps: 1
+img_cond_steps: 1
+horizon_steps: 4
+act_steps: 4
+use_ddim: False
+# Define missing variables
+abs_action: False
+use_6d_rot: False
+run_eval: true
+num_eval_episodes: 5
+eval_n_envs: 10
+
+env:
+  n_envs: 4
+  name: ${env_name}
+  best_reward_threshold_for_success: 1
+  max_episode_steps: 400
+  save_video: false
+  use_image_obs: true
+  specific:  # Pass additional parameters to environment creation
+    abs_action: ${abs_action}
+    use_6d_rot: ${use_6d_rot}
+  wrappers:
+    robomimic_image:
+      normalization_path: ${normalization_path}
+      success_steps_before_termination: 1
+      # Image observation keys for visual encoder (matching pretraining)
+      image_keys: [
+                   'agentview_image',
+                   'robot0_eye_in_hand_image'
+                   ]
+      low_dim_keys: ['robot0_eef_pos',
+                    'robot0_eef_quat',
+                    'robot0_gripper_qpos']
+      shape_meta: ${shape_meta}
+      use_6d_rot: ${use_6d_rot}  # Pass 6D rotation flag to wrapper
+      # Visual feature extraction settings for finetuning
+      # use_visual_features and pretrained_model will be set by TrainDistillFlowImgAgent
+      # device: ${device}
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+      gamma: ${train.gamma}
+
+
+shape_meta:
+  obs:
+    rgb:
+      shape: [96, 96, 6]
+    state:
+      shape: [9]
+  action: 
+    shape: [7]
+
+wandb:
+  entity: ${oc.env:DPPO_WANDB_ENTITY}
+  project: robomimic-${env_name}-finetune-dppo-image
+  run: ${now:%H-%M-%S}_${name}
+
+train:
+  n_train_itr: 300
+  n_critic_warmup_itr: 2
+  n_steps: 300
+  gamma: 0.999
+  augment: True
+  grad_accumulate: 15
+  actor_lr: 1e-5
+  actor_weight_decay: 0
+  actor_lr_scheduler:
+    first_cycle_steps: 200
+    warmup_steps: 10
+    min_lr: 1e-5
+  critic_lr: 1e-3
+  critic_weight_decay: 0
+  critic_lr_scheduler:
+    first_cycle_steps: 200
+    warmup_steps: 10
+    min_lr: 1e-3
+  save_model_freq: 100
+  eval_freq: 1000  # Evaluate every N training steps (n_steps * n_envs * act_steps)
+  val_freq: 10  # Legacy parameter for backward compatibility
+  render:
+    freq: 1
+    num: 0
+  # PPO specific
+  reward_scale_running: True
+  reward_scale_const: 1.0
+  gae_lambda: 0.95
+  batch_size: 500
+  logprob_batch_size: 500
+  update_epochs: 10
+  vf_coef: 0.5
+  target_kl: 1
+
+model:
+  _target_: model.diffusion.diffusion_ppo.PPODiffusion
+  # HP to tune
+  gamma_denoising: 0.9
+  clip_ploss_coef: 0.01
+  clip_ploss_coef_base: 0.001
+  clip_ploss_coef_rate: 3
+  randn_clip_value: 3
+  min_sampling_denoising_std: 0.1
+  min_logprob_denoising_std: 0.1
+  #
+  use_ddim: ${use_ddim}
+  ddim_steps: ${ft_denoising_steps}
+  learn_eta: False
+  eta:
+    base_eta: 1
+    input_dim: ${obs_dim}  # Already includes visual features (137)
+    mlp_dims: [256, 256]
+    action_dim: ${action_dim}
+    min_eta: 0.1
+    max_eta: 1.0
+    _target_: model.diffusion.eta.EtaFixed
+  network_path: ${base_policy_path}
+  # Actor is loaded from pretrained checkpoint - VisionResNetDiffusionMLP
+  # The actor config here should match the pretrained model architecture
+  actor:
+    _target_: model.diffusion.vision_resnet_mlp_diffusion.VisionResNetDiffusionMLP
+    num_img: 2  # Two camera views
+    spatial_emb: 64  # Match flow matching
+    time_dim: 64  # Match flow matching
+    dropout: 0.0  # Match flow matching
+    visual_feature_dim: 128  # Match flow matching
+    fused_feature_dim: 128  # Match flow matching
+    img_cond_steps: ${img_cond_steps}
+    cond_dim: ${original_obs_dim}  # Original state dim (9) - matches pretrained model
+    horizon_steps: ${horizon_steps}
+    action_dim: ${action_dim}
+    img_height: 96
+    img_width: 96
+    num_kp: 32  # Number of keypoints for spatial softmax
+    unet_base_channels: 128  # Base channels for UNet
+    unet_channel_mults: [1, 2, 2]  # Channel multipliers for UNet layers
+    # Augmentation params (matching flow matching)
+    use_augmentation: True  # Enable random crop during training
+    crop_height: 84  # Crop to 84x84
+    crop_width: 84
+  # Critic only sees encoded features (no images)
+  critic:
+    _target_: model.common.critic.CriticObs
+    mlp_dims: [1024, 1024, 1024]
+    activation_type: Mish
+    residual_style: True
+    cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}  # Augmented obs_dim * cond_steps
+  ft_denoising_steps: ${ft_denoising_steps}
+  horizon_steps: ${horizon_steps}
+  obs_dim: ${obs_dim}  # Augmented obs_dim (visual + state)
+  action_dim: ${action_dim}
+  denoising_steps: ${denoising_steps}
+  device: ${device}

@@ -1,0 +1,218 @@
+defaults:
+  - _self_
+hydra:
+  run:
+    dir: ${logdir}
+_target_: agent.finetune.train_distill_flow_img_agent.TrainDistillFlowImgAgent
+
+name: ${env_name}_ft_distill_flow_mlp_img_ta${horizon_steps}_fl${flow_steps}
+logdir: /store/real/zhanyis/dppo/log_dir/robomimic-finetune/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+# Path to pretrained image-based flow matching policy (update with your actual path)
+base_policy_path: "/store/real/zhanyis/dppo/log_dir/robomimic-pretrain/transport_pre_flow_matching_mlp_img_ta8_td10/2025-09-14_18-05-48_42/checkpoint/state_8000.pt"
+robomimic_env_cfg_path: /store/real/zhanyis/dppo/cfg/robomimic/env_meta/${env_name}-img.json
+normalization_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/ph/normalization.npz
+
+seed: 42
+device: cuda:0
+env_name: transport
+# Original dimensions before visual feature merging
+obs_dim: 18  # Low-dim state dimension (will be augmented in agent by adding visual features)
+action_dim: 14
+flow_steps: 10
+cond_steps: 1
+img_cond_steps: 1
+horizon_steps: 8
+act_steps: 8
+noise_dim: 112  # action_dim * horizon_steps = 14 * 8 = 112
+
+env:
+  n_envs: 16
+  name: ${env_name}
+  best_reward_threshold_for_success: 1
+  max_episode_steps: 700
+  save_video: False
+  use_image_obs: true
+  wrappers:
+    robomimic_image:
+      normalization_path: ${normalization_path}
+      success_steps_before_termination: 15
+      # Image observation keys for visual encoder (matching pretraining)
+      image_keys: ['robot0_eye_in_hand_image',
+                   'robot1_eye_in_hand_image',
+                   'shouldercamera0_image', 
+                   'shouldercamera1_image']
+      low_dim_keys: ['robot0_eef_pos',
+                    'robot0_eef_quat',
+                    'robot0_gripper_qpos',
+                    "robot1_eef_pos",
+                    "robot1_eef_quat",
+                    "robot1_gripper_qpos"]
+      shape_meta: ${shape_meta}
+      # Visual feature extraction settings for finetuning
+      # use_visual_features and pretrained_model will be set by TrainDistillFlowImgAgent
+      # device: ${device}
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+      gamma: ${train.gamma}
+
+# Shape metadata for visual observations (matching pretraining)
+shape_meta:
+  obs:
+    rgb:
+      shape: [96, 96, 12]  # 4 cameras × 3 RGB channels
+    state:
+      shape: [18]  # proprioceptive state dimension
+  action: 
+    shape: [14]
+
+wandb:
+  entity: null  # Set your wandb entity or disable
+  project: robomimic-${env_name}-distill-flow-img
+  run: ${now:%Y-%m-%d_%H-%M-%S_%f}_${name}
+
+train:
+  num_train_steps: 150000  # Total number of environment steps
+  val_freq: 10
+  n_steps: 200
+  n_train_itr: 1000
+  batch_size: 256
+  eval_freq: 20000000 # Evaluate every N steps
+  gamma: 0.99
+  tau: 0.01
+  update_freq: 1
+  gradient_steps: 10
+
+  
+  # Learning rates
+  actor_lr: 1e-4
+  critic_lr: 1e-4
+
+  
+  # Weight decay
+  actor_weight_decay: 1e-5
+  critic_weight_decay: 1e-5
+
+  
+  # Learning rate scheduler
+  use_lr_scheduler: True
+  lr_scheduler:
+    first_cycle_steps: 1000
+    warmup_steps: 10
+    min_lr: 1e-6
+  
+  # Target networks
+  actor_update_freq: 2
+  critic_target_update_freq: 2
+  
+  save_model_freq: 100
+  render:
+    freq: 1
+    num: 0  # Save videos from first 2 environments per episode
+  
+  # Logging
+  log_freq: 1
+  max_grad_norm: 1.0
+
+# Replay buffer settings  
+replay_buffer:
+  max_size: 150000
+  # N-step returns
+  use_n_step: false  # Whether to use n-step returns
+  n_step: 1  # Number of steps for n-step returns
+
+# RLPD settings
+use_rlpd: true
+expert_ratio: 0.3
+
+# Adaptive expert ratio settings
+use_adaptive_expert_ratio: true
+adaptive_expert_ratio_start: 0.9
+adaptive_expert_ratio_end: 0.1
+adaptive_expert_ratio_steps: 20000
+
+
+model:
+  _target_: model.rl.distill_residual_rl_img.DistillRLImgModel
+  # obs_dim will be augmented by agent to include visual features
+  obs_dim: ${obs_dim}
+  action_dim: ${action_dim}
+  noise_dim: ${noise_dim}
+  cond_steps: ${cond_steps}
+  horizon_steps: ${horizon_steps}
+  device: ${device}
+
+  # N-step returns
+  use_n_step: ${replay_buffer.use_n_step}  # Whether to use n-step returns
+  n_step: ${replay_buffer.n_step}  # Number of steps for n-step returns
+  
+  # Pretrained flow matching policy path
+  pretrained_flow_policy_path: ${base_policy_path}
+  
+  # Network configurations
+  actor_hidden_dims: [512, 512, 512]
+  # actor_hidden_dims: [1024, 1024, 1024]
+  critic_hidden_dims: [512, 512, 512]
+  activation_type: "GELU"
+  use_layernorm: true
+
+  
+  # Loss coefficients
+  bc_loss_weight: 40.0
+  critic_weight: 1.0
+
+  use_soft_q_filtering: true
+  q_filtering_warmup_steps: 7000
+  q_underestimation_threshold: -0.1  # Threshold for Q underestimation detection
+
+  # Q normalization
+  use_q_normalization: true
+  
+  # Disable Q loss for expert data samples (ablation study)
+  disable_q_loss_for_expert_data: false  # Set to true to disable Q loss for expert data
+  
+  multi_sample_next_noise: true
+  
+  # Critic ensemble settings
+  critic_ensemble_size: 10
+  
+
+  
+
+
+# Expert dataset for pretraining and RLPD (with images)
+expert_dataset:
+  _target_: agent.dataset.sequence.StitchedSequenceQLearningDataset
+  dataset_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/ph/train.npz
+  horizon_steps: ${horizon_steps}
+  cond_steps: ${cond_steps}
+  img_cond_steps: ${img_cond_steps}
+  device: ${device}
+  discount_factor: ${train.gamma}
+  gamma: ${train.gamma}  # Discount for horizon aggregation
+  max_n_episodes: 50
+  use_img: true  # Enable image data loading
+  success_steps_for_termination: ${env.wrappers.robomimic_image.success_steps_before_termination}  # Match online env
+  use_n_step: ${replay_buffer.use_n_step}  # Same as replay buffer setting
+  n_step: ${replay_buffer.n_step}  # Same as replay buffer setting
+
+# Visualization settings
+visualize_trajectories: false  # Enable trajectory visualization
+visualization_freq: 200000000  # Create visualizations every N steps
+num_eval_episodes: 10
+
+# Q-value overestimation analysis
+log_q_overestimation: true
+
+# Exploration strategy settings
+# Valid strategy names: ["standard", "max_q_min", "max_q_std", "max_q_std_filtered_by_min"]
+# - "standard": Sample single action with random noise
+# - "max_q_min": Sample multiple actions, select one with maximum of minimum Q-values across ensemble
+# - "max_q_std": Sample multiple actions, select one with maximum Q-std across ensemble
+# - "max_q_std_filtered_by_min": Sample multiple actions, filter by min Q threshold, then select max Q-std
+
+online_explore_strategy: "max_q_min"  # Strategy for online data collection during training
+evaluate_strategy: "standard"  # Strategy for evaluation episodes
+num_exploration_samples: 10  # Number of action samples for multi-sample strategies

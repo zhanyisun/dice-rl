@@ -1,0 +1,129 @@
+defaults:
+  - _self_
+hydra:
+  run:
+    dir: ${logdir}
+_target_: agent.pretrain.train_flow_matching_img_agent.TrainFlowMatchingImgAgent
+
+name: ${env_name}_pre_flow_matching_mlp_img_ta${horizon_steps}_td${flow_steps}
+logdir: ${oc.env:DPPO_LOG_DIR}/pusht-pretrain/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+train_dataset_path: data_dir/pusht/processed/train.npz
+normalization_path: data_dir/pusht/processed/normalization.npz
+
+seed: 42
+device: cuda:0
+env_name: pusht
+obs_dim: 2  # Only agent position for image-based (first 2 dims of state)
+action_dim: 2  # PushT action dimension
+flow_steps: 10
+horizon_steps: 4
+cond_steps: 1
+img_cond_steps: 1
+act_steps: 4
+
+# Environment config
+env:
+  n_envs: 20
+  name: ${env_name}
+  env_type: pusht
+  best_reward_threshold_for_success: 1
+  max_episode_steps: 300
+  save_video: false
+  success_threshold: 0.7695
+  use_image_obs: true
+  wrappers:
+    pusht_image:
+      normalization_path: ${normalization_path}
+      success_threshold: ${env.success_threshold}
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+
+# Shape metadata for visual observations
+shape_meta:
+  obs:
+    rgb:
+      shape: [96, 96, 3]  # 1 camera × 3 RGB channels for PushT
+    state:
+      shape: [2]  # Only agent position for image-based per timestep
+  action: 
+    shape: [2]  # PushT action dimension
+
+wandb:
+  entity: ${oc.env:DPPO_WANDB_ENTITY}
+  project: pusht-pretrain-image
+  run: ${now:%H-%M-%S}_${name}
+
+train:
+  n_epochs: 20000
+  batch_size: 256
+  learning_rate: 1e-4
+  weight_decay: 1e-6
+  lr_scheduler:
+    first_cycle_steps: 10000
+    warmup_steps: 100
+    min_lr: 1e-5
+  epoch_start_ema: 20
+  update_ema_freq: 10
+  save_model_freq: 200
+  render:
+    freq: 5
+    num: 5
+
+model:
+  _target_: model.flow_matching.flow_matching.FlowMatchingModel
+  network:
+    _target_: model.flow_matching.vision_resnet_mlp_flow_matching.VisionResNetFlowMatchingMLP
+    num_img: 1  # PushT has single camera view
+    spatial_emb: 32
+    time_dim: 32
+    dropout: 0.0
+    visual_feature_dim: 32  # Visual feature dimension after fusion
+    fused_feature_dim: 32
+    img_cond_steps: ${img_cond_steps}
+    cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}
+    horizon_steps: ${horizon_steps}
+    action_dim: ${action_dim}
+    img_height: 96  # PushT uses 96x96 images
+    img_width: 96
+    num_kp: 32  # Number of keypoints for spatial softmax
+    unet_base_channels: 128  # Base channels for UNet
+    unet_channel_mults: [1, 2, 2]  # Channel multipliers for UNet layers
+    # Augmentation params (matching much-ado-about-noising)
+    use_augmentation: true  # Enable random crop during training
+    crop_height: 84  # Crop to 84x84 (same as much-ado)
+    crop_width: 84
+
+  horizon_steps: ${horizon_steps}
+  obs_dim: ${obs_dim}
+  action_dim: ${action_dim}
+  flow_steps: ${flow_steps}
+  cond_steps: ${cond_steps}
+  integration_method: 'euler' # "euler" | "heun" | "rk4"
+  schedule: 'linear' # "linear" | "cosine"
+  t_sampling: 'uniform' # "uniform" | "beta" | "stratified"
+  weight_method: 'none' # "none" | "importance"
+  device: ${device}
+
+ema:
+  # decay: 0.995
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+
+train_dataset:
+  _target_: agent.dataset.sequence.StitchedSequenceDataset
+  use_img: true
+  dataset_path: ${train_dataset_path}
+  horizon_steps: ${horizon_steps}
+  cond_steps: ${cond_steps}
+  img_cond_steps: ${img_cond_steps}
+  device: ${device}
+  max_n_episodes: 50
+  use_6d_rot: false  # PushT doesn't use rotation actions
+  abs_action: false  # PushT uses delta actions
+  state_dim_override: 2  # Only use first 2 dims (agent pos) for image-based

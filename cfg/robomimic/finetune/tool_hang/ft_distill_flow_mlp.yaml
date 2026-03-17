@@ -1,0 +1,167 @@
+defaults:
+  - _self_
+hydra:
+  run:
+    dir: ${logdir}
+_target_: agent.finetune.train_distill_flow_agent.TrainDistillFlowAgent
+
+name: ${env_name}_ft_distill_flow_mlp_ta${horizon_steps}_fl${flow_steps}
+logdir: /store/real/zhanyis/dppo/log_dir/robomimic-finetune/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+base_policy_path: /store/real/zhanyis/dppo/log_dir/robomimic-pretrain/tool_hang_pre_flow_matching_mlp_ta8_td10/2025-08-10_18-20-15_42/checkpoint/state_8000.pt
+# base_policy_path: '/store/real/zhanyis/dppo/log_dir/robomimic-pretrain/tool_hang_pre_flow_matching_mlp_ta8_td10/2025-08-10_18-16-33_42/checkpoint/state_3000.pt'
+# base_policy_path: '/store/real/zhanyis/dppo/log_dir/robomimic-pretrain/tool_hang_pre_flow_matching_mlp_ta8_td10/2025-09-01_03-38-25_42/checkpoint/state_8000.pt'
+robomimic_env_cfg_path: /store/real/zhanyis/dppo/cfg/robomimic/env_meta/${env_name}.json
+normalization_path: /store/real/zhanyis/dppo/data_dir/robomimic/tool_hang/ph/normalization.npz
+
+seed: 42
+device: cuda:0
+env_name: tool_hang
+obs_dim: 53
+action_dim: 7
+flow_steps: 10  # Based on your finding that 6 steps is as good as 10
+cond_steps: 1
+horizon_steps: 8
+act_steps: 8
+noise_dim: 112  # action_dim * horizon_steps = 7 * 4 = 28 for chunked actions
+
+env:
+  n_envs: 32
+  name: ${env_name}
+  best_reward_threshold_for_success: 1
+  max_episode_steps: 700
+  save_video: False
+  wrappers:
+    robomimic_lowdim:
+      normalization_path: ${normalization_path}
+      success_steps_before_termination: 15  # Number of steps to wait after success before terminating
+      low_dim_keys: ['robot0_eef_pos',
+                    'robot0_eef_quat',
+                    'robot0_gripper_qpos',
+                    'object']
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+
+wandb:
+  entity: null  # Set your wandb entity or disable
+  project: robomimic-${env_name}-distill-flow
+  run: ${now:%Y-%m-%d_%H-%M-%S_%f}_${name}
+
+train:
+  num_train_steps: 150000  # Total number of environment steps
+  val_freq: 10
+  n_steps: 200
+  n_train_itr: 1000
+  batch_size: 256
+  eval_freq: 20000000 # Evaluate every N steps
+  gamma: 0.99
+  tau: 0.01
+  update_freq: 1
+  gradient_steps: 15  # Increase critic updates when expert_ratio is low
+  
+  # Learning rates - smaller for finetuning
+  actor_lr: 1e-4
+  critic_lr: 1e-4  # Much smaller to prevent Q-value explosion
+
+  
+  # Weight decay
+  actor_weight_decay: 1e-5
+  critic_weight_decay: 1e-5
+
+  
+  # Learning rate scheduler
+  use_lr_scheduler: True
+  lr_scheduler:
+    first_cycle_steps: 1000
+    warmup_steps: 10
+    min_lr: 1e-6
+  
+  # Target networks
+  actor_update_freq: 2
+  critic_target_update_freq: 2
+  
+  save_model_freq: 100
+  render:
+    freq: 1
+    num: 0  # Save videos from first 2 environments per episode
+  
+  # Logging
+  log_freq: 1
+  max_grad_norm: 1.0
+
+# Replay buffer settings  
+replay_buffer:
+  max_size: 150000
+
+# RLPD (Reinforcement Learning with Prior Data) settings
+use_rlpd: true  # Enable RLPD symmetric sampling (set to false for regular replay buffer)
+expert_ratio: 0.3  # Initial/fixed expert ratio (ignored if use_adaptive_expert_ratio=true)
+
+# Adaptive expert ratio settings
+use_adaptive_expert_ratio: true  # Enable adaptive expert ratio scheduling
+adaptive_expert_ratio_start: 0.9  # Start with 90% expert data after pretraining
+adaptive_expert_ratio_end: 0.1    # Decay to 10% expert data
+adaptive_expert_ratio_steps: 20000  # Number of env steps for linear decay (K)
+
+
+model:
+  _target_: model.rl.distill_rl.DistillRLModel
+  obs_dim: ${obs_dim}
+  action_dim: ${action_dim}
+  noise_dim: ${noise_dim}
+  cond_steps: ${cond_steps}
+  horizon_steps: ${horizon_steps}
+  device: ${device}
+  
+  # Pretrained flow matching policy path (simplified loading)
+  pretrained_flow_policy_path: ${base_policy_path}
+  
+  # Network configurations - reasonable size for stability
+  actor_hidden_dims: [2048, 2048, 2048]    # Actor: π(a|s,z) - input: s(23*1) + z(7*4) = 51 dim
+  critic_hidden_dims: [1024, 1024, 1024]   # Critic: Q(s,z,a) - input: s(23*1) + z(7*4) + a(7*4) = 79 dim  
+  activation_type: "GELU"
+  # Layer normalization (RLPD paper recommendation)
+  use_layernorm: true
+  
+
+  
+
+
+  
+  # Loss coefficients
+  bc_loss_weight: 20.0  # Reduced from 5 to prevent conflict with Q-learning
+
+
+  critic_weight: 1.0
+  
+
+  use_soft_q_filtering: false  # Use soft Q-filtering
+  q_filtering_warmup_steps: 30000
+
+  # q normalization
+  use_q_normalization: true # this has to be true
+  
+  # Q-function noise dependency
+  multi_sample_next_noise: true  # Use multiple samples for next noise (if applicable)
+  
+  # Critic ensemble settings
+  critic_ensemble_size: 10  # Number of critic networks for reduced overestimation bias
+
+# Expert dataset for pretraining and RLPD
+expert_dataset:
+  _target_: agent.dataset.sequence.StitchedSequenceQLearningDataset
+  dataset_path: /store/real/zhanyis/dppo/data_dir/robomimic/tool_hang/ph/train.npz
+  horizon_steps: ${horizon_steps}
+  cond_steps: ${cond_steps}
+  device: ${device}
+  max_n_episodes: 50  # Increased for RLPD (more expert data available)
+
+# Visualization settings
+visualize_trajectories: false  # Enable trajectory visualization
+visualization_freq: 20000000  # Create visualizations every N steps
+num_eval_episodes: 10
+
+# Q-value overestimation analysis
+log_q_overestimation: true  # Enable Q-value overestimation logging

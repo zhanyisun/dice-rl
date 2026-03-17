@@ -1,0 +1,131 @@
+defaults:
+  - _self_
+hydra:
+  run:
+    dir: ${logdir}
+_target_: agent.pretrain.train_diffusion_img_agent.TrainDiffusionImgAgent
+
+name: ${env_name}_pre_diffusion_mlp_img_ta${horizon_steps}_td${denoising_steps}
+logdir: ${oc.env:DPPO_LOG_DIR}/robomimic-pretrain/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+# robomimic_env_cfg_path: cfg/robomimic/env_meta/${env_name}-img-abs.json
+# train_dataset_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/ph_abs/train.npz
+# normalization_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/ph_abs/normalization.npz
+robomimic_env_cfg_path: cfg/robomimic/env_meta/${env_name}-img.json
+train_dataset_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/ph/train.npz
+normalization_path: /store/real/zhanyis/dppo/data_dir/robomimic/${env_name}-img/ph/normalization.npz
+
+seed: 42
+device: cuda:0
+env_name: transport
+obs_dim: 18  # proprioception only
+action_dim: 14
+use_6d_rot: false  # Set to true to use 6D rotation representation (10D actions)
+abs_action: false  # Whether actions are absolute poses (true) or deltas (false). Set true when using absolute action dataset
+denoising_steps: 50
+horizon_steps: 8
+cond_steps: 1
+img_cond_steps: 1
+act_steps: 8
+
+# Environment config - adapted from ft_ppo_diffusion_mlp_img.yaml
+env:
+  n_envs: 10
+  name: ${env_name}
+  best_reward_threshold_for_success: 1
+  max_episode_steps: 700
+  save_video: false  # Match PPO config
+  use_image_obs: true
+  wrappers:
+    robomimic_image:
+      normalization_path: ${normalization_path}
+      low_dim_keys: ['robot0_eef_pos',
+                     'robot0_eef_quat',
+                     'robot0_gripper_qpos',
+                     "robot1_eef_pos",
+                     "robot1_eef_quat",
+                     "robot1_gripper_qpos"]
+      image_keys: ['robot0_eye_in_hand_image',
+                   'robot1_eye_in_hand_image',
+                   'shouldercamera0_image', 
+                   'shouldercamera1_image']
+      shape_meta: ${shape_meta}
+      use_6d_rot: ${use_6d_rot}
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+
+# Shape metadata for visual observations
+shape_meta:
+  obs:
+    rgb:
+      shape: [96, 96, 12]  # 4 cameras × 3 RGB channels, not counting img_cond_steps
+    state:
+      shape: [18]  # proprioceptive state dimension per timestep
+  action: 
+    shape: [14]
+wandb:
+  entity: ${oc.env:DPPO_WANDB_ENTITY}
+  project: robomimic-${env_name}-pretrain
+  run: ${now:%H-%M-%S}_${name}
+
+
+train:
+  n_epochs: 8000
+  batch_size: 128
+  learning_rate: 1e-4
+  weight_decay: 1e-6
+  lr_scheduler:
+    first_cycle_steps: 5000
+    warmup_steps: 100
+    min_lr: 1e-5
+  epoch_start_ema: 20
+  update_ema_freq: 10
+  save_model_freq: 200
+  render:
+    freq: 2
+    num: 0
+
+model:
+  _target_: model.diffusion.diffusion.DiffusionModel
+  predict_epsilon: True
+  denoised_clip_value: 1.0
+  network:
+    _target_: model.flow_matching.vision_resnet_mlp_flow_matching.VisionResNetFlowMatchingMLP
+    num_img: 4
+    spatial_emb: 64
+    time_dim: 128
+    dropout: 0.0
+    visual_feature_dim: 128  # Visual feature dimension after fusion
+    fused_feature_dim: 128 
+    img_cond_steps: ${img_cond_steps}
+    cond_dim: 18  # state.shape[-1] * cond_steps = 9 * 1 = 9
+    horizon_steps: ${horizon_steps}
+    action_dim: ${action_dim}
+    img_height: 96  # Tool hang uses 240x240 images
+    img_width: 96
+    num_kp: 32  # Number of keypoints for spatial softmax
+    unet_base_channels: 128  # Base channels for UNet
+    unet_channel_mults: [1, 2, 2]  # Channel multipliers for UNet layers
+    use_augmentation: false  # Enable random crop during training
+    crop_height: 84  # Crop to 84x84 (same as much-ado)
+    crop_width: 84
+  horizon_steps: ${horizon_steps}
+  obs_dim: ${obs_dim}
+  action_dim: ${action_dim}
+  denoising_steps: ${denoising_steps}
+  device: ${device}
+
+ema:
+  decay: 0.995
+
+train_dataset:
+  _target_: agent.dataset.sequence.StitchedSequenceDataset
+  use_img: True
+  dataset_path: ${train_dataset_path}
+  horizon_steps: ${horizon_steps}
+  max_n_episodes: 50
+  cond_steps: ${cond_steps}
+  img_cond_steps: ${img_cond_steps}
+  device: ${device}

@@ -1,0 +1,197 @@
+defaults:
+  - _self_
+hydra:
+  run:
+    dir: ${logdir}
+  job:
+    chdir: false
+_target_: agent.finetune.train_distill_residual_flow_agent.TrainDistillResidualFlowAgent
+
+name: ${env_name}_ft_distill_residual_flow_mlp_ta${horizon_steps}_fl${flow_steps}
+logdir: log_dir/robomimic-finetune/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+# replace with your actual path to pretrained flow matching policy checkpoint downloaded from HF
+base_policy_path: log_dir/robomimic-pretrain/pretrained_bc_policy_${env_name}_low_dim/checkpoint/state_3000.pt
+robomimic_env_cfg_path: cfg/robomimic/env_meta/${env_name}.json
+normalization_path: data_dir/robomimic/${env_name}-low-dim/ph_pretrain/normalization.npz
+
+seed: 42
+device: cuda:0
+env_name: square
+run_eval: true  # Enable evaluation environments and periodic evaluation during training
+obs_dim: 23
+action_dim: 7
+flow_steps: 10  # Based on your finding that 6 steps is as good as 10
+cond_steps: 1
+horizon_steps: 4
+act_steps: 4
+noise_dim: 28  # action_dim * horizon_steps = 7 * 4 = 28 for chunked actions
+
+env:
+  n_envs: 4
+  name: ${env_name}
+  best_reward_threshold_for_success: 1
+  max_episode_steps: 400
+  save_video: False
+  wrappers:
+    robomimic_lowdim:
+      normalization_path: ${normalization_path}
+      success_steps_before_termination: 1  # Number of steps to wait after success before terminating
+      low_dim_keys: ['robot0_eef_pos',
+                    'robot0_eef_quat',
+                    'robot0_gripper_qpos',
+                    'object']
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+      gamma: ${train.gamma}
+
+wandb:
+  entity: null  # Set your wandb entity or disable
+  project: robomimic-${env_name}-distill-residual-flow-state
+  run: ${now:%Y-%m-%d_%H-%M-%S_%f}_${name}
+
+train:
+  num_train_steps: 2000000  # Total number of environment steps
+  val_freq: 10
+  n_steps: 200
+  n_train_itr: 1000
+  batch_size: 256
+  eval_freq: 1000 # Evaluate every N steps
+  gamma: 0.99
+  tau: 0.01
+  update_freq: 1
+  gradient_steps: 10  # Increase critic updates when expert_ratio is low
+  
+  # Learning rates - smaller for finetuning
+  actor_lr: 1e-4
+  critic_lr: 1e-4  # Much smaller to prevent Q-value explosion
+  
+  # Weight decay
+  actor_weight_decay: 1e-5
+  critic_weight_decay: 1e-5
+  
+  # Learning rate scheduler
+  use_lr_scheduler: True
+  lr_scheduler:
+    first_cycle_steps: 1000
+    warmup_steps: 10
+    min_lr: 1e-6
+  
+  # Target networks
+  actor_update_freq: 2
+  critic_target_update_freq: 2
+  
+  save_model_freq: 100
+  render:
+    freq: 1
+    num: 0  # Save videos from first 2 environments per episode
+  
+  # Logging
+  log_freq: 1
+  max_grad_norm: 1.0
+
+# Replay buffer settings  
+replay_buffer:
+  max_size: 5000000
+  # N-step returns
+  use_n_step: true  # Whether to use n-step returns
+  n_step: 3  # Number of steps for n-step returns
+  # Expert dataset n-step settings (can differ from online data)
+  expert_use_n_step: ${expert_dataset.use_n_step}  # Use expert dataset's n-step setting
+  expert_n_step: ${expert_dataset.n_step}  # Use expert dataset's n-step value
+
+# RLPD (Reinforcement Learning with Prior Data) settings
+use_rlpd: true  # Enable RLPD symmetric sampling (set to false for regular replay buffer)
+expert_ratio: 0.3  # Initial/fixed expert ratio (ignored if use_adaptive_expert_ratio=true)
+
+# Adaptive expert ratio settings
+use_adaptive_expert_ratio: true  # Enable adaptive expert ratio scheduling
+adaptive_expert_ratio_start: 0.5  # Start with 90% expert data after pretraining
+adaptive_expert_ratio_end: 0.1    # Decay to 10% expert data
+adaptive_expert_ratio_steps: 10000  # Number of env steps for linear decay (K)
+
+model:
+  _target_: model.rl.distill_residual_rl.DistillResidualRLModel
+  obs_dim: ${obs_dim}
+  action_dim: ${action_dim}
+  noise_dim: ${noise_dim}
+  cond_steps: ${cond_steps}
+  horizon_steps: ${horizon_steps}
+  device: ${device}
+  
+  # Residual conditioning: condition residual on base action instead of noise  
+  condition_residual_on_base_action: false  # Set to true for r_θ(s, a_base) instead of r_θ(s, z)
+  num_multi_z_for_actor_loss: 16  # Number of noise samples 
+  # N-step returns
+  use_n_step: ${replay_buffer.use_n_step}  # Whether to use n-step returns
+  n_step: ${replay_buffer.n_step}  # Number of steps for n-step returns
+  # Pretrained flow matching policy path (simplified loading)
+  pretrained_flow_policy_path: ${base_policy_path}
+  # Network configurations - reasonable size for stability
+  actor_hidden_dims: [1024, 1024, 1024]    # Residual actor: r_θ(s,z)
+  critic_hidden_dims: [1024, 1024, 1024]   # Critic: Q(s,z,a) - input: s + z + a
+
+  activation_type: "GELU"
+  # Layer normalization (RLPD paper recommendation)
+  use_layernorm: true
+  # Loss coefficients - bc_loss_weight used for residual regularization
+  bc_loss_weight: 100.0  # Used for ||r_θ(s,z)||² regularization in residual RL
+  critic_weight: 1.0
+  use_soft_q_filtering: true  # Use soft Q-filtering
+  q_filtering_warmup_steps: 3500
+  q_underestimation_threshold: -0.5 # Threshold for Q underestimation detection
+  replay_flow_warmup_steps: 1000
+
+  # q normalization
+  use_q_normalization: true # this has to be true
+  
+  # Disable Q loss for expert data samples (ablation study)
+  disable_q_loss_for_expert_data: true  # Set to true to disable Q loss for expert data
+  # Always retain BC loss for expert data
+  always_retain_bc_loss_for_expert_data: true  # If true, bc_filter=1 for expert data regardless of Q-filtering
+  
+  # Q-function noise dependency
+  multi_sample_next_noise: true  # Use multiple samples for next noise (if applicable)
+  num_next_noise_samples: 4  # Number of samples for next noise (K in the paper)
+  # Critic ensemble settings
+  critic_ensemble_size: 10  # Number of critic networks for reduced overestimation bias
+
+
+# Expert dataset for pretraining and RLPD (with visual features)
+expert_dataset:
+  _target_: agent.dataset.sequence.StitchedSequenceQLearningDataset
+  dataset_path: data_dir/robomimic/${env_name}-low-dim/ph_finetune/train.npz
+  horizon_steps: ${horizon_steps}
+  cond_steps: ${cond_steps}
+  device: ${device}
+  discount_factor: ${train.gamma}  # Use same gamma as training
+  gamma: ${train.gamma}  # Discount for horizon aggregation
+  max_n_episodes: 50
+  use_img: false  # Enable image data loading
+  success_steps_for_termination: ${env.wrappers.robomimic_lowdim.success_steps_before_termination}  # Match online env
+  # use_n_step: ${replay_buffer.use_n_step}  # Same as replay buffer setting
+  # n_step: ${replay_buffer.n_step}  # Same as replay bufpretrfer setting
+  use_n_step: true
+  n_step: 3
+
+# Visualization settings
+visualize_trajectories: false  # Enable trajectory visualization
+visualization_freq: 200000000  # Create visualizations every N steps
+num_eval_episodes: 10
+eval_n_envs: 30  # Number of parallel environments for evaluation (training uses env.n_envs=4)
+
+# Q-value overestimation analysis
+log_q_overestimation: true  # Enable Q-value overestimation logging
+
+# Exploration strategy settings
+# Valid strategy names: ["standard", "max_q_min", "max_q_std", "max_q_std_filtered_by_min"]
+# - "standard": Sample single action with random noise
+# - "max_q_min": Sample multiple actions, select one with maximum of minimum Q-values across ensemble
+# - "max_q_std": Sample multiple actions, select one with maximum Q-std across ensemble
+# - "max_q_std_filtered_by_min": Sample multiple actions, filter by min Q threshold, then select max Q-std
+
+online_explore_strategy: "max_q_min"  # Strategy for online data collection during training
+evaluate_strategy: "max_q_min"  # Strategy for evaluation episodes
+num_exploration_samples: 16  # Number of action samples for multi-sample strategies
