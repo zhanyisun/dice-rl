@@ -138,3 +138,6 @@ If you find this codebase useful, consider citing:
   year={2026}
 }
 ```
+
+# Contact
+If you have any questions, please feel free to contact [Zhanyi Sun](mailto:zhanyis@stanford.edu). If you leave an issue, please send me an accompanying email!
