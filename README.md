@@ -1,6 +1,6 @@
 # From Prior to Pro: Efficient Skill Mastery via Distribution Contractive RL Finetuning (DICE-RL)
 
-[[Paper](https://arxiv.org/abs/2603.10263)]&nbsp;&nbsp;[[Website](https://zhanyisun.github.io/dice.rl.2026/)]&nbsp;&nbsp;[[Datasets](https://zhanyisun.github.io/dice.rl.2026/)]&nbsp;&nbsp;[[Checkpoints](https://zhanyisun.github.io/dice.rl.2026/)]
+[[Paper](https://arxiv.org/abs/2603.10263)]&nbsp;&nbsp;[[Website](https://zhanyisun.github.io/dice.rl.2026/)]&nbsp;&nbsp;[[Datasets](https://huggingface.co/datasets/wintermelontree/robomimic-pretrain-data)]&nbsp;&nbsp;[[Checkpoints](https://huggingface.co/wintermelontree/robomimic-pretrain-checkpoints)]
 
 [Zhanyi Sun](https://zhanyisun.github.io/), [Shuran Song](https://shurans.github.io/)
 
