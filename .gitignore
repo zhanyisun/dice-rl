@@ -23,6 +23,7 @@ cfg/robomimic/*.sh
 
 # Media files
 *.png
+!media/teaser.png 
 *.mp4
 *.pdf
 *.svg
