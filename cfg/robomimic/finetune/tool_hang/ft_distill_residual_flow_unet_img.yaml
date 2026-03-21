@@ -78,7 +78,7 @@ train:
   gamma: 0.99
   tau: 0.01
   update_freq: 1
-  gradient_steps: 20
+  gradient_steps: 10
 
   # Learning rates
   actor_lr: 1e-4
