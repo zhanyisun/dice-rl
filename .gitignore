@@ -18,7 +18,7 @@ hf_release/
 
 # Project-specific files
 *.pkl
-*.sh
+# *.sh
 cfg/robomimic/*.sh
 
 # Media files
