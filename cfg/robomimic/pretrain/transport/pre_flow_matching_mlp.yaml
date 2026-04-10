@@ -44,7 +44,7 @@ env:
       reset_within_step: True
 
 wandb:
-  entity: ${oc.env:DICE-RL_WANDB_ENTITY}
+  entity: ${oc.env:DICE_RL_WANDB_ENTITY}
   project: robomimic-${env_name}-pretrain
   run: ${now:%H-%M-%S}_${name}
 
