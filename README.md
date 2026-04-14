@@ -14,7 +14,7 @@ Stanford University
 
 1. Clone the repository.
 ```console
-git clone git@github.com:zhanyisun/dice-rl.git
+git clone git@github.com:real-stanford/dice-rl.git
 cd dice-rl
 ```
 
