@@ -50,7 +50,7 @@ all = [
     "ipdb==0.13.13",
     "patchelf",
     "pin",
-    "robomimic @ git+https://github.com/ARISE-Initiative/robomimic.git",
+    "robomimic @ git+https://github.com/ARISE-Initiative/robomimic.git@v0.5.0",
     "robosuite @ git+https://github.com/ARISE-Initiative/robosuite.git@v1.4.1",
 ]
 
